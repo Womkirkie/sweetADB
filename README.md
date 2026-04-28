@@ -12,7 +12,7 @@
 ```bash
 git clone https://github.com/Womkirkie/sweetADB
 cd sweetADB
-gcc -O2 -pthread -o sweetadb sweetadb.c
+gcc -O2 -pthread -o sweetadb sweetadb.c # or gcc -o sweetadb sweetadb.c -lpthread -static
 ./sweetadb           # listens on default port 5555
 ./sweetadb 5556      # custom port
 ```
