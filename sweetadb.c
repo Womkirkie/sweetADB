@@ -1,5 +1,4 @@
-//  THis mimics or atleast trys to "Samsung Galaxy S21 Ultra fingerprint"
-
+//  THis mimics or atleast trys to "Samsung Galaxy S21 Ultra" which is a dope as phone btw 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,8 +14,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <signal.h>
 
-// ADB protocol values
+                                            // ADB protocol constants or sum
 #define A_CNXN  0x4e584e43u
 #define A_OKAY  0x59414b4fu
 #define A_CLSE  0x45534c43u
@@ -37,6 +37,7 @@
 #define LOG_DIR         "mimic"
 #define SESSION_DIR     "mimic/sessions"
 #define PAYLOAD_DIR     "mimic/payloads"
+#define BIN_DIR         "mimic/bin"
 typedef struct {
     uint32_t command;
     uint32_t arg0;
@@ -76,6 +77,7 @@ typedef struct {
 } conn_ctx;
 static pthread_mutex_t g_ip_mutex = PTHREAD_MUTEX_INITIALIZER;
 static FILE           *g_json_fp   = NULL;
+static FILE           *g_little_fp = NULL;
 static uint32_t g_crc32_table[256];
 static void init_crc32_table(void) {
     for (uint32_t i = 0; i < 256; i++) {
@@ -114,42 +116,39 @@ static void update_ip_tracker(const char *ip) {
     snprintf(path, sizeof(path), "%s/all_ips.txt", LOG_DIR);
     pthread_mutex_lock(&g_ip_mutex);
     FILE *f = fopen(path, "r");
-    char  lines[65536] = {0};
+    char lines[65536] = {0};
     size_t llen = 0;
     if (f) {
         llen = fread(lines, 1, sizeof(lines) - 1, f);
         fclose(f);
     }
-    char search[MAX_IP_LEN + 8];
-    snprintf(search, sizeof(search), "%s ->", ip);
-    char *pos = strstr(lines, search);
-    if (pos) {
-        char *arrow = strstr(pos, "-> ");
-        if (arrow) {
-            arrow += 3;
-            int cnt = atoi(arrow);
-            cnt++;
-            char newcount[16];
-            int nc = snprintf(newcount, sizeof(newcount), "%d", cnt);
-            char *end = arrow;
-            while (*end >= '0' && *end <= '9') end++;
-            int oldnc = (int)(end - arrow);
-            if (nc != oldnc) {
-                memmove(arrow + nc, end, strlen(end) + 1);
-                llen = llen + (nc - oldnc);
+
+    char out[65536] = {0};
+    size_t out_len = 0;
+    int found = 0;
+    char *save = NULL;
+    char *line = strtok_r(lines, "\n", &save);
+    while (line) {
+        char ipbuf[MAX_IP_LEN] = {0};
+        int cnt = 0;
+        if (sscanf(line, "%15s -> %d", ipbuf, &cnt) == 2) {
+            if (strcmp(ipbuf, ip) == 0) {
+                cnt++;
+                found = 1;
             }
-            memcpy(arrow, newcount, nc);
+            int n = snprintf(out + out_len, sizeof(out) - out_len, "%s -> %d\n", ipbuf, cnt);
+            if (n < 0 || (size_t)n >= sizeof(out) - out_len) break;
+            out_len += (size_t)n;
         }
-    } else {
-        char entry[64];
-        int elen = snprintf(entry, sizeof(entry), "%s -> 1\n", ip);
-        if (llen + elen < (int)sizeof(lines)) {
-            memcpy(lines + llen, entry, elen + 1);
-            llen += elen;
-        }
+        line = strtok_r(NULL, "\n", &save);
     }
+    if (!found) {
+        int n = snprintf(out + out_len, sizeof(out) - out_len, "%s -> 1\n", ip);
+        if (n > 0 && (size_t)n < sizeof(out) - out_len) out_len += (size_t)n;
+    }
+
     f = fopen(path, "w");
-    if (f) { fwrite(lines, 1, llen, f); fclose(f); }
+    if (f) { fwrite(out, 1, out_len, f); fclose(f); }
     pthread_mutex_unlock(&g_ip_mutex);
 }
 static FILE *open_session_file(const char *ip, char *out_path, size_t out_len) {
@@ -165,9 +164,9 @@ static FILE *open_session_file(const char *ip, char *out_path, size_t out_len) {
     if (fp) {
         time_t now = time(NULL);
         char ts[64];
-        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S UTC", gmtime(&now));
+        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S UTC", gmtime(&now)); // the more // in a // comment the more i hate you 
         fprintf(fp, "====================================================\n");
-        fprintf(fp, "  ADB Honeypot — Session Log\n");
+        fprintf(fp, "  ADB Honeypot - Session Log\n");
         fprintf(fp, "  IP      : %s\n", ip);
         fprintf(fp, "  Started : %s\n", ts);
         fprintf(fp, "====================================================\n\n");
@@ -223,11 +222,106 @@ static void log_json_event(conn_ctx *ctx,
     fflush(g_json_fp);
     pthread_mutex_unlock(&g_ip_mutex);
 }
+static void extract_host_from_url(const char *url, char *host, size_t host_len) {
+    host[0] = '\0';
+    if (!url || !host || host_len == 0) return;
+    const char *p = strstr(url, "://");
+    if (!p) return;
+    p += 3;
+    size_t i = 0;
+    while (*p && *p != '/' && *p != ':' && *p != '?' && *p != '#' && i + 1 < host_len) {
+        host[i++] = *p++;
+    }
+    host[i] = '\0';
+} // f
+static const char *find_next_url_start(const char *cmd) {
+    const char *schemes[] = {"http://", "https://", "ftp://"};
+    const int nschemes = (int)(sizeof(schemes) / sizeof(schemes[0]));
+    const char *best = NULL;
+    for (int i = 0; i < nschemes; i++) {
+        const char *p = strstr(cmd, schemes[i]);
+        if (p && (!best || p < best)) best = p;
+    }
+    return best;
+}
+static size_t extract_url_at(const char *start, char *url, size_t url_len) {
+    if (!start || !url || url_len == 0) return 0;
+    size_t i = 0;
+    while (start[i] && start[i] != ' ' && start[i] != '\t' &&
+           start[i] != '\n' && start[i] != '\r' &&
+           start[i] != '"' && start[i] != '\'' &&
+           i + 1 < url_len) {
+        url[i] = start[i];
+        i++;
+    }
+    while (i > 0 && (url[i - 1] == ';' || url[i - 1] == ',' || url[i - 1] == ')')) i--;
+    url[i] = '\0';
+    return i;
+}
+static const char *detect_method(const char *cmd) {
+    if (!cmd) return NULL;
+    if (strstr(cmd, "curl")) return "curl";
+    if (strstr(cmd, "wget")) return "wget";
+    if (strstr(cmd, "ftp"))  return "ftp";
+    return NULL;
+}
+static const char *detect_method_near(const char *cmd, const char *url_start) {
+    if (!cmd || !url_start || url_start < cmd) return detect_method(cmd);
+    size_t dist = (size_t)(url_start - cmd);
+    size_t win = dist > 80 ? 80 : dist;
+    const char *start = url_start - win;
+    for (const char *p = url_start; p > start; p--) {
+        if (p - 4 >= start && memcmp(p - 4, "curl", 4) == 0) return "curl";
+        if (p - 4 >= start && memcmp(p - 4, "wget", 4) == 0) return "wget";
+        if (p - 3 >= start && memcmp(p - 3, "ftp", 3) == 0) return "ftp";
+    }
+    return detect_method(cmd);
+}
+static void log_little_payload(conn_ctx *ctx, const char *cmd) {
+    if (!g_little_fp || !cmd) return;
+    pthread_mutex_lock(&g_ip_mutex);
+    const char *cursor = cmd;
+    while (1) {
+        const char *url_start = find_next_url_start(cursor);
+        if (!url_start) break;
+        char url[1024];
+        size_t used = extract_url_at(url_start, url, sizeof(url));
+        if (used == 0) {
+            cursor = url_start + 1;
+            continue;
+        }
+        const char *method = detect_method_near(cmd, url_start);
+        if (!method) {
+            cursor = url_start + used;
+            continue;
+        }
+        if ((strcmp(method, "curl") == 0 || strcmp(method, "wget") == 0) &&
+            !(strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0)) {
+            cursor = url_start + used;
+            continue;
+        }
+        char payload_server[128];
+        extract_host_from_url(url, payload_server, sizeof(payload_server));
+        if (!payload_server[0]) {
+            cursor = url_start + used;
+            continue;
+        }
+        fprintf(g_little_fp,
+                "{\"scan_ip\":\"%s\",\"attack_ip\":\"%s\",\"payload_server\":\"%s\","
+                "\"method\":\"%s\",\"link\":\"%s\"}\n",
+                ctx->ip, ctx->ip, payload_server, method, url);
+        cursor = url_start + used;
+    }
+    fflush(g_little_fp);
+    pthread_mutex_unlock(&g_ip_mutex);
+}
 static void dump_payload(conn_ctx *ctx, uint32_t stream_id,
                          const uint8_t *data, uint32_t len) {
     char path[256];
-    snprintf(path, sizeof(path), "%s/%s_%ld_%u.bin",
-             PAYLOAD_DIR, ctx->ip, (long)time(NULL), stream_id);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    snprintf(path, sizeof(path), "%s/%s_%ld_%06ld_%u_%u.bin",
+             PAYLOAD_DIR, ctx->ip, (long)tv.tv_sec, (long)tv.tv_usec, stream_id, ctx->seq);
     FILE *f = fopen(path, "wb");
     if (f) { fwrite(data, 1, len, f); fclose(f); }
 }
@@ -235,7 +329,11 @@ static int read_exact(int fd, void *buf, size_t n) {
     size_t got = 0;
     while (got < n) {
         ssize_t r = read(fd, (char*)buf + got, n - got);
-        if (r <= 0) return -1;
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (r == 0) return -1;
         got += r;
     }
     return 0;
@@ -244,7 +342,11 @@ static int write_exact(int fd, const void *buf, size_t n) {
     size_t sent = 0;
     while (sent < n) {
         ssize_t w = write(fd, (const char*)buf + sent, n - sent);
-        if (w <= 0) return -1;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (w == 0) return -1;
         sent += w;
     }
     return 0;
@@ -361,6 +463,124 @@ static const char *get_fake_response(const char *cmd) {
             return FAKE_RESPONSES[i].response;
     return "";
 }
+static void trim_inplace(char *s) {
+    if (!s) return;
+    char *start = s;
+    while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')
+        start++;
+    if (start != s) memmove(s, start, strlen(start) + 1);
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\n' || s[n - 1] == '\r')) {
+        s[n - 1] = '\0';
+        n--;
+    }
+}
+static void build_single_shell_response(const char *cmd, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!cmd) return;
+
+    if (strncmp(cmd, "echo ", 5) == 0 || strcmp(cmd, "echo") == 0) {
+        if (strstr(cmd, "getprop ro.product.name") && strstr(cmd, "whoami")) {
+            snprintf(out, out_len, "SM-G998B root\n");
+            return;
+        }
+        const char *msg = cmd + 4;
+        while (*msg == ' ' || *msg == '\t') msg++;
+        char cleaned[1024];
+        snprintf(cleaned, sizeof(cleaned), "%s", msg);
+        size_t n = strlen(cleaned);
+        if (n >= 2 &&
+            ((cleaned[0] == '"' && cleaned[n - 1] == '"') ||
+             (cleaned[0] == '\'' && cleaned[n - 1] == '\''))) {
+            cleaned[n - 1] = '\0';
+            memmove(cleaned, cleaned + 1, n - 1);
+        }
+        snprintf(out, out_len, "%s\n", cleaned);
+        return;
+    }
+
+    if (strstr(cmd, "grep")) {
+        if (strstr(cmd, "/proc/cpuinfo") && strstr(cmd, "Hardware")) {
+            snprintf(out, out_len, "Hardware        : Qualcomm Technologies, Inc LAHAINA\n");
+            return;
+        }
+        if (strstr(cmd, "/proc/version")) {
+            snprintf(out, out_len,
+                     "Linux version 5.10.168-android13 (clang version 14.0.7) #1 SMP PREEMPT\n");
+            return;
+        }
+    }
+
+    snprintf(out, out_len, "%s", get_fake_response(cmd));
+}
+static void build_shell_response(const char *cmd, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!cmd) return;
+    char copy[2048];
+    snprintf(copy, sizeof(copy), "%s", cmd);
+
+    char segment[1024];
+    size_t seg_i = 0;
+    int quote = 0;
+    int escaped = 0;
+    int pending_op = 0; /* 0=start/;, 1=&&, 2=|| */
+    int prev_had_output = 1;
+
+    for (size_t i = 0;; i++) {
+        char c = copy[i];
+        int at_end = (c == '\0');
+        int split = 0;
+        int next_op = 0;
+        int op_len = 0;
+
+        if (!at_end) {
+            if (escaped) escaped = 0;
+            else if (c == '\\') escaped = 1;
+            else if (quote == 0 && (c == '"' || c == '\'')) quote = c;
+            else if (quote == c) quote = 0;
+        }
+
+        if (quote == 0 && !escaped && !at_end) {
+            if (c == ';') { split = 1; op_len = 1; next_op = 0; }
+            else if (c == '&' && copy[i + 1] == '&') { split = 1; op_len = 2; next_op = 1; }
+            else if (c == '|' && copy[i + 1] == '|') { split = 1; op_len = 2; next_op = 2; }
+        }
+        if (at_end) split = 1;
+
+        if (split) {
+            segment[seg_i] = '\0';
+            trim_inplace(segment);
+            if (segment[0]) {
+                char one[1024];
+                int should_run = 1;
+                if (pending_op == 1) should_run = prev_had_output;       // /* && */
+                else if (pending_op == 2) should_run = !prev_had_output; // /* || */
+                if (should_run) {
+                    build_single_shell_response(segment, one, sizeof(one));
+                    if (one[0]) {
+                        size_t have = strlen(out);
+                        size_t room = (have < out_len) ? (out_len - have - 1) : 0;
+                        if (room > 0) strncat(out, one, room);
+                        prev_had_output = 1;
+                    } else {
+                        prev_had_output = 0;
+                    }
+                } else {
+                    prev_had_output = 0;
+                }
+            }
+            pending_op = next_op;
+            seg_i = 0;
+            if (at_end) break;
+            i += (size_t)op_len - 1;
+            continue;
+        }
+
+        if (seg_i + 1 < sizeof(segment)) segment[seg_i++] = c;
+    }
+}
 static void handle_open(conn_ctx *ctx, const adb_msg *msg,
                         const uint8_t *data,
                         double base_ms, double jitter_ms)
@@ -390,9 +610,28 @@ static void handle_open(conn_ctx *ctx, const adb_msg *msg,
     log_command(ctx, detail, data, msg->data_length, base_ms, jitter_ms);
     log_json_event(ctx, "stream_open", detail, ms_since(&ctx->conn_start));
     if (s->type == ST_SHELL) {
-        const char *prompt = "# ";
-        send_adb_msg(ctx->sock, A_WRTE, s->remote_id, s->local_id,
-                     (const uint8_t*)prompt, (uint32_t)strlen(prompt));
+        const char *open_cmd = NULL;
+        if (strncmp(service, "shell:", 6) == 0 && service[6] != '\0')
+            open_cmd = service + 6;
+        if (open_cmd) {
+            char label[1100];
+            snprintf(label, sizeof(label), "SHELL_CMD: %s", open_cmd);
+            log_command(ctx, label, (const uint8_t*)open_cmd, (uint32_t)strlen(open_cmd),
+                        base_ms, jitter_ms);
+            log_json_event(ctx, "shell_command", label, ms_since(&ctx->conn_start));
+            log_little_payload(ctx, open_cmd);
+
+            char resp[2048];
+            build_shell_response(open_cmd, resp, sizeof(resp));
+            char full_resp[2100];
+            snprintf(full_resp, sizeof(full_resp), "%s# ", resp);
+            send_adb_msg(ctx->sock, A_WRTE, s->remote_id, s->local_id,
+                         (const uint8_t*)full_resp, (uint32_t)strlen(full_resp));
+        } else {
+            const char *prompt = "# ";
+            send_adb_msg(ctx->sock, A_WRTE, s->remote_id, s->local_id,
+                         (const uint8_t*)prompt, (uint32_t)strlen(prompt));
+        }
     }
 }
 static void handle_write(conn_ctx *ctx, const adb_msg *msg,
@@ -409,7 +648,7 @@ static void handle_write(conn_ctx *ctx, const adb_msg *msg,
         uint32_t cmdlen = msg->data_length < sizeof(cmd)-1
                           ? msg->data_length : sizeof(cmd)-1;
         memcpy(cmd, data, cmdlen);
-        for (int i = cmdlen-1; i >= 0 && (cmd[i]=='\n'||cmd[i]=='\r'); i--)
+        for (int i = (int)cmdlen - 1; i >= 0 && (cmd[i]=='\n'||cmd[i]=='\r'); i--)
             cmd[i] = '\0';
 
         char label[1100];
@@ -417,7 +656,9 @@ static void handle_write(conn_ctx *ctx, const adb_msg *msg,
         log_command(ctx, label, data, msg->data_length, base_ms, jitter_ms);
         log_json_event(ctx, "shell_command", label,
                        ms_since(&ctx->conn_start));
-        const char *resp = get_fake_response(cmd);
+        log_little_payload(ctx, cmd);
+        char resp[2048];
+        build_shell_response(cmd, resp, sizeof(resp));
         char full_resp[2048];
         snprintf(full_resp, sizeof(full_resp), "%s# ", resp);
         send_adb_msg(ctx->sock, A_WRTE,
@@ -461,9 +702,7 @@ static void handle_auth(conn_ctx *ctx, const adb_msg *msg,
 {
     char label[512];
     if (msg->arg0 == AUTH_TOKEN) {
-        snprintf(label, sizeof(label), "AUTH_TOKEN (challenge from client)");
-        send_adb_msg(ctx->sock, A_AUTH, AUTH_TOKEN, 0,
-                     ctx->auth_token, sizeof(ctx->auth_token));
+        snprintf(label, sizeof(label), "AUTH_TOKEN_UNEXPECTED len=%u", msg->data_length);
     } else if (msg->arg0 == AUTH_SIGNATURE) {
         snprintf(label, sizeof(label), "AUTH_SIGNATURE len=%u", msg->data_length);
         const char *banner =
@@ -495,9 +734,9 @@ static void *handle_connection(void *arg) {
     conn_ctx *ctx = (conn_ctx*)arg;
     gettimeofday(&ctx->conn_start, NULL);
     ctx->last_packet = ctx->conn_start;
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)arg);
+    unsigned rng_seed = (unsigned)time(NULL) ^ (unsigned)(uintptr_t)arg;
     for (int i = 0; i < 20; i++)
-        ctx->auth_token[i] = (uint8_t)(rand() & 0xFF);
+        ctx->auth_token[i] = (uint8_t)(rand_r(&rng_seed) & 0xFF);
     ctx->session_fp = open_session_file(ctx->ip, ctx->session_path,
                                         sizeof(ctx->session_path));
     update_ip_tracker(ctx->ip);
@@ -519,16 +758,8 @@ static void *handle_connection(void *arg) {
         log_command(ctx, label, data, msg.data_length, 0.0, 0.0);
         log_json_event(ctx, "cnxn", label, 0.0);
         if (data) { free(data); data = NULL; }
-        const char *banner =
-            "device::ro.product.name=SM-G998B;"
-            "ro.product.model=SM-G998B;"
-            "ro.product.device=p3s;"
-            "ro.product.brand=samsung;"
-            "ro.build.version.release=14;"
-            "ro.build.version.sdk=34;"
-            "features=cmd,shell,dev,stat,ls,sync,send_recv\n";
-        send_adb_msg(ctx->sock, A_CNXN, ADB_VERSION, ADB_MAXDATA,
-                     (const uint8_t*)banner, (uint32_t)strlen(banner));
+        send_adb_msg(ctx->sock, A_AUTH, AUTH_TOKEN, 0,
+                     ctx->auth_token, sizeof(ctx->auth_token));
     } else if (msg.command == A_AUTH) {
         double base = 0.0, jitter = 0.0;
         handle_auth(ctx, &msg, data, base, jitter);
@@ -616,15 +847,25 @@ done:
 }
 int main(int argc, char **argv) {
     int port = (argc > 1) ? atoi(argv[1]) : 5555;
+    signal(SIGPIPE, SIG_IGN);
     init_crc32_table();
     mkdir_p(LOG_DIR);
     mkdir_p(SESSION_DIR);
     mkdir_p(PAYLOAD_DIR);
+    mkdir_p(BIN_DIR);
     char json_path[256];
     snprintf(json_path, sizeof(json_path), "%s/events.jsonl", LOG_DIR);
     g_json_fp = fopen(json_path, "a");
     if (!g_json_fp) {
         perror("Cannot open events.jsonl");
+        return 1;
+    }
+    char little_path[256];
+    snprintf(little_path, sizeof(little_path), "%s/little.jsonl", BIN_DIR);
+    g_little_fp = fopen(little_path, "a");
+    if (!g_little_fp) {
+        perror("Cannot open little.jsonl");
+        fclose(g_json_fp);
         return 1;
     }
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -647,7 +888,9 @@ int main(int argc, char **argv) {
     printf("  Per-IP sessions   : ./%s/<ip>_NNNN.txt\n", SESSION_DIR);
     printf("  IP tracker        : ./%s/all_ips.txt\n", LOG_DIR);
     printf("  JSON events       : ./%s/events.jsonl\n", LOG_DIR);
-    printf("  Payload dumps     : ./%s/\n\n", PAYLOAD_DIR); // basicaly does not work but what ev
+    printf("  Payload links     : ./%s/little.jsonl\n", BIN_DIR);
+    printf("  Payload dumps     : ./%s/\n", PAYLOAD_DIR); // basicaly does not work but what ev
+    printf("  Bin folder        : ./%s/\n\n", BIN_DIR);
     while (1) {
         struct sockaddr_in cli_addr;
         socklen_t cli_len = sizeof(cli_addr);
@@ -667,6 +910,7 @@ int main(int argc, char **argv) {
         }
     }
     fclose(g_json_fp);
+    fclose(g_little_fp);
     close(srv);
     return 0;
 }
