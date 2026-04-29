@@ -265,15 +265,37 @@ static const char *detect_method(const char *cmd) {
     if (strstr(cmd, "ftp"))  return "ftp";
     return NULL;
 }
+static int is_shell_separator(char c) {
+    return c == ';' || c == '&' || c == '|';
+}
+static int is_word_char(char c) {
+    return (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') ||
+           c == '_';
+}
+static int match_method_at(const char *cmd_start, const char *pos, const char *method) {
+    size_t mlen = strlen(method);
+    if (strncmp(pos, method, mlen) != 0) return 0;
+    char before = (pos > cmd_start) ? pos[-1] : '\0';
+    char after = pos[mlen];
+    if (before && is_word_char(before)) return 0;
+    if (after && is_word_char(after)) return 0;
+    return 1;
+}
 static const char *detect_method_near(const char *cmd, const char *url_start) {
     if (!cmd || !url_start || url_start < cmd) return detect_method(cmd);
-    size_t dist = (size_t)(url_start - cmd);
-    size_t win = dist > 80 ? 80 : dist;
-    const char *start = url_start - win;
+    const char *start = cmd;
+    for (const char *p = url_start; p > cmd; p--) {
+        if (is_shell_separator(p[-1])) {
+            start = p;
+            break;
+        }
+    }
     for (const char *p = url_start; p > start; p--) {
-        if (p - 4 >= start && memcmp(p - 4, "curl", 4) == 0) return "curl";
-        if (p - 4 >= start && memcmp(p - 4, "wget", 4) == 0) return "wget";
-        if (p - 3 >= start && memcmp(p - 3, "ftp", 3) == 0) return "ftp";
+        if (p - 4 >= start && match_method_at(start, p - 4, "curl")) return "curl";
+        if (p - 4 >= start && match_method_at(start, p - 4, "wget")) return "wget";
+        if (p - 3 >= start && match_method_at(start, p - 3, "ftp")) return "ftp";
     }
     return detect_method(cmd);
 }
@@ -307,9 +329,9 @@ static void log_little_payload(conn_ctx *ctx, const char *cmd) {
             continue;
         }
         fprintf(g_little_fp,
-                "{\"scan_ip\":\"%s\",\"attack_ip\":\"%s\",\"payload_server\":\"%s\","
+                "{\"src_ip\":\"%s\",\"payload_server\":\"%s\","
                 "\"method\":\"%s\",\"link\":\"%s\"}\n",
-                ctx->ip, ctx->ip, payload_server, method, url);
+                ctx->ip, payload_server, method, url);
         cursor = url_start + used;
     }
     fflush(g_little_fp);

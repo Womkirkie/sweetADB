@@ -12,7 +12,7 @@
 ```bash
 git clone https://github.com/Womkirkie/sweetADB
 cd sweetADB
-gcc -O2 -pthread -o sweetadb sweetadb.c # or gcc -o sweetadb sweetadb.c -lpthread -static
+gcc -O2 -pthread -o sweetadb sweetadb.c
 ./sweetadb           # listens on default port 5555
 ./sweetadb 5556      # custom port
 ```
@@ -25,32 +25,33 @@ Requires: `gcc`, `pthreads`, Linux
 
 ```
 mimic/
-├── events.jsonl              # All events
-├── all_ips.txt               # IP connection tracker
+├── events.jsonl              # All events, one JSON object per line
+├── all_ips.txt               # IP connection frequency tracker
 ├── sessions/
-│   └── <ip>_0001.txt                 # Connection transcript
+│   └── <ip>_0001.txt                 # Per-connection transcript
 ├── payloads/
 │   └── <ip>_<sec>_<usec>_<id>_<seq>.bin
+│                                    # Raw binary payload chunks when sent
 └── bin/
-    └── little.jsonl                  # Parsed payload-link
+    └── little.jsonl                  # Parsed payload-link intelligence
 ```
 
-### `little.jsonl`
+### `little.jsonl` schema
+
+One JSON object per detected payload URL:
 
 ```json
 {
-  "scan_ip": "notboob",
-  "attack_ip": "notboob",
-  "payload_server": "boob",
+  "src_ip": "45.135.194.83",
+  "payload_server": "1.1.1.1",
   "method": "wget",
-  "link": "http://boob/hack/arm.bin"
+  "link": "http://1.1.1.1/hack/arm.bin"
 }
 ```
 
 Fields:
 
-- `scan_ip`: source IP 
-- `attack_ip`: same as `scan_ip` (ps its the same shit different name)
+- `src_ip`: source IP
 - `payload_server`: host/IP extracted from URL in dropped payload
 - `method`: (`curl`, `wget`, `ftp`)
 - `link`: Its the link.
