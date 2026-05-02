@@ -33,7 +33,7 @@ mimic/
 │   └── <ip>_<sec>_<usec>_<id>_<seq>.bin
 │                                    # Raw binary payload chunks when sent
 └── bin/
-    └── little.jsonl                  # Parsed payload-link intelligence
+    └── little.jsonl                  # Parsed payload-link
 ```
 
 ### `little.jsonl` schema
